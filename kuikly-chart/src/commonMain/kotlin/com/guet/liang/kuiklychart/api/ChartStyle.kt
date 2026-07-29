@@ -140,6 +140,19 @@ public class ChartInteractionConfig {
     public var dismissSelectionOnOutsideTap: Boolean = true
 }
 
+/** Runtime data-transition options used by `ChartView.update`. */
+@KuiklyChartDsl
+public class ChartAnimationConfig {
+    /** Enables interpolation between the currently displayed and replacement data. */
+    public var enabled: Boolean = true
+
+    /** Transition duration in milliseconds. Zero or a negative value applies data immediately. */
+    public var durationMillis: Int = 450
+
+    /** Easing curve applied to interpolation progress. */
+    public var easing: ChartAnimationEasing = ChartAnimationEasing.EASE_IN_OUT
+}
+
 internal fun formatChartValue(value: Float): String {
     val absoluteValue = kotlin.math.abs(value)
     return when {
@@ -164,4 +177,3 @@ private fun formatTwoDecimals(value: Float): String {
     val roundedValue = kotlin.math.round(value * 100f) / 100f
     return roundedValue.toString()
 }
-

@@ -15,12 +15,21 @@ public class ChartSeries internal constructor(
     private val mutablePointLabels: MutableList<String> = mutableListOf()
 
     public val values: List<Float?>
-        get() = mutableValues
+        get() = mutableValues.toList()
 
     public val pointColors: List<Color>
-        get() = mutablePointColors
+        get() = mutablePointColors.toList()
 
     public val pointLabels: List<String>
+        get() = mutablePointLabels.toList()
+
+    internal val dataValues: List<Float?>
+        get() = mutableValues
+
+    internal val dataPointColors: List<Color>
+        get() = mutablePointColors
+
+    internal val dataPointLabels: List<String>
         get() = mutablePointLabels
 
     public var color: Color = defaultColor
@@ -34,11 +43,11 @@ public class ChartSeries internal constructor(
     public var valueLabelColor: Color? = null
 
     public fun values(vararg values: Float) {
-        replaceValues(values.map { it })
+        replaceDataValues(values.map { it })
     }
 
     public fun values(values: List<Float?>) {
-        replaceValues(values)
+        replaceDataValues(values)
     }
 
     public fun color(color: Color) {
@@ -53,6 +62,16 @@ public class ChartSeries internal constructor(
     public fun pointColors(colors: List<Color>) {
         mutablePointColors.clear()
         mutablePointColors.addAll(colors)
+    }
+
+    /** Sets the fill color for each bar. Colors repeat when fewer colors than values are supplied. */
+    public fun barColors(vararg colors: Color) {
+        barColors(colors.toList())
+    }
+
+    /** Sets the fill color for each bar. Colors repeat when fewer colors than values are supplied. */
+    public fun barColors(colors: List<Color>) {
+        pointColors(colors)
     }
 
     public fun pointLabels(vararg labels: String) {
@@ -79,7 +98,7 @@ public class ChartSeries internal constructor(
         valueLabelColor = color
     }
 
-    private fun replaceValues(values: List<Float?>) {
+    internal fun replaceDataValues(values: List<Float?>) {
         mutableValues.clear()
         mutableValues.addAll(values)
     }
@@ -94,9 +113,18 @@ public class ChartSpec internal constructor(
     private val mutableSeries: MutableList<ChartSeries> = mutableListOf()
 
     public val labels: List<String>
-        get() = mutableLabels
+        get() = mutableLabels.toList()
 
     public val series: List<ChartSeries>
+        get() = mutableSeries.toList()
+
+    internal val dataLabels: List<String>
+        get() = mutableLabels
+
+    internal val dataSeries: List<ChartSeries>
+        get() = mutableSeries
+
+    internal val mutableDataSeries: MutableList<ChartSeries>
         get() = mutableSeries
 
     public var title: String = ""
@@ -110,6 +138,7 @@ public class ChartSpec internal constructor(
     public val pie: PieChartConfig = PieChartConfig()
     public val tooltip: ChartTooltipConfig = ChartTooltipConfig()
     public val interaction: ChartInteractionConfig = ChartInteractionConfig()
+    public val animation: ChartAnimationConfig = ChartAnimationConfig()
 
     public fun labels(vararg labels: String) {
         labels(labels.toList())
@@ -225,18 +254,23 @@ public class ChartSpec internal constructor(
         interaction.apply(init)
     }
 
+    /** Configures runtime old-data to new-data transitions. */
+    public fun animation(init: ChartAnimationConfig.() -> Unit) {
+        animation.apply(init)
+    }
+
     public fun clearSeries() {
         mutableSeries.clear()
     }
 
     internal fun dataCount(): Int {
-        val labelCount = labels.size
-        val seriesCount = series.maxOfOrNull { it.values.size } ?: 0
+        val labelCount = mutableLabels.size
+        val seriesCount = mutableSeries.maxOfOrNull { it.dataValues.size } ?: 0
         return maxOf(labelCount, seriesCount)
     }
 
     internal fun categoryLabel(index: Int): String {
-        return labels.getOrNull(index) ?: (index + 1).toString()
+        return mutableLabels.getOrNull(index) ?: (index + 1).toString()
     }
 
     private fun addSeries(
@@ -249,4 +283,3 @@ public class ChartSpec internal constructor(
         return ChartSeries(type, name, values, defaultColor).apply(init).also(mutableSeries::add)
     }
 }
-

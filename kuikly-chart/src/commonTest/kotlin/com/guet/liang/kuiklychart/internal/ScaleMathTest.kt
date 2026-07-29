@@ -68,6 +68,42 @@ class ScaleMathTest {
     }
 
     @Test
+    fun explicitWideAxisRangeProducesEvenTicksAcrossTheRange() {
+        val spec = ChartSpec().apply {
+            axes {
+                y {
+                    minimum = 0f
+                    maximum = 100f
+                    tickCount = 5
+                }
+            }
+            line("Narrow data", 48f, 50f, 52f)
+        }
+
+        val scale = ScaleMath.calculate(spec, ViewportMath.full(3))
+
+        assertEquals(listOf(0f, 20f, 40f, 60f, 80f, 100f), scale.ticks)
+    }
+
+    @Test
+    fun reversedExplicitAxisBoundsAreNormalized() {
+        val spec = ChartSpec().apply {
+            axes {
+                y {
+                    minimum = 40f
+                    maximum = -10f
+                }
+            }
+            line("Temperature", 0f, 15f, 30f)
+        }
+
+        val scale = ScaleMath.calculate(spec, ViewportMath.full(3))
+
+        assertEquals(-10f, scale.minimum)
+        assertEquals(40f, scale.maximum)
+    }
+
+    @Test
     fun emptyDataUsesFiniteFallbackScale() {
         val scale = ScaleMath.calculate(ChartSpec(), ViewportMath.full(0))
 
@@ -75,5 +111,21 @@ class ScaleMathTest {
         assertEquals(1f, scale.maximum, 0.0001f)
         assertTrue(scale.ticks.isNotEmpty())
         assertTrue(scale.ticks.all(Float::isFinite))
+    }
+
+    @Test
+    fun animatedScaleInterpolatesBoundsAndEndsAtTheExactTarget() {
+        val start = ValueScale(0f, 100f, listOf(0f, 50f, 100f))
+        val target = ValueScale(-50f, 150f, listOf(-50f, 0f, 50f, 100f, 150f))
+
+        val midpoint = start.interpolateTo(target, 0.5f)
+
+        assertEquals(-25f, midpoint.minimum, 0.0001f)
+        assertEquals(125f, midpoint.maximum, 0.0001f)
+        assertEquals(4, midpoint.ticks.size)
+        assertEquals(3, start.interpolateTo(target, 0.1f).ticks.size)
+        assertEquals(5, start.interpolateTo(target, 0.9f).ticks.size)
+        assertEquals(start, start.interpolateTo(target, 0f))
+        assertEquals(target, start.interpolateTo(target, 1f))
     }
 }

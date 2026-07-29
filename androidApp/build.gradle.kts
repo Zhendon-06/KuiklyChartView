@@ -6,6 +6,9 @@ plugins {
 android {
     namespace = "com.guet.liang.kuiklychartview"
     compileSdk = 34
+    buildFeatures {
+        buildConfig = true
+    }
     defaultConfig {
         applicationId = "com.guet.liang.kuiklychartview"
         minSdk = 23

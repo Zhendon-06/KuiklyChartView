@@ -106,7 +106,7 @@ publishing {
                 username = System.getenv("mavenUserName") ?: ""
                 password = System.getenv("mavenPassword") ?: ""
             }
-            rootProject.properties["mavenUr?"]?.toString()?.let { url = uri(it) }
+            rootProject.properties["mavenUrl"]?.toString()?.let { url = uri(it) }
         }
     }
 }

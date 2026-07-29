@@ -3,6 +3,7 @@ package com.guet.liang.kuiklychart.api
 import com.tencent.kuikly.core.base.Color
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ChartSpecDslTest {
@@ -46,7 +47,7 @@ class ChartSpecDslTest {
             labels("Online", "Store")
             bars("Sales", 8f, 12f) {
                 pointLabels("Web", "Retail")
-                pointColors(firstBarColor, secondBarColor)
+                barColors(firstBarColor, secondBarColor)
             }
         }
 
@@ -77,5 +78,39 @@ class ChartSpecDslTest {
         assertEquals(listOf("Direct", "Search"), series.pointLabels)
         assertEquals(directColor.hexColor, series.pointColors[0].hexColor)
         assertEquals(ChartPalette.colors[1].hexColor, series.pointColors[1].hexColor)
+    }
+
+    @Test
+    fun exposedListsAreSnapshotsOfDslState() {
+        val spec = ChartSpec().apply {
+            labels("A")
+            line("Trend", 1f)
+        }
+        val exposedLabels = spec.labels.toMutableList()
+        val exposedSeries = spec.series.toMutableList()
+        val exposedValues = spec.series.single().values.toMutableList()
+
+        exposedLabels.add("B")
+        exposedSeries.clear()
+        exposedValues[0] = 99f
+
+        assertEquals(listOf("A"), spec.labels)
+        assertEquals(1, spec.series.size)
+        assertEquals(listOf(1f), spec.series.single().values)
+    }
+
+    @Test
+    fun animationDslKeepsRuntimeTransitionOptions() {
+        val spec = ChartSpec().apply {
+            animation {
+                enabled = false
+                durationMillis = 720
+                easing = ChartAnimationEasing.EASE_OUT
+            }
+        }
+
+        assertFalse(spec.animation.enabled)
+        assertEquals(720, spec.animation.durationMillis)
+        assertEquals(ChartAnimationEasing.EASE_OUT, spec.animation.easing)
     }
 }

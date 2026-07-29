@@ -84,7 +84,8 @@ kotlin {
 }
 
 group = "com.guet.liang.kuiklychartview"
-version = System.getenv("kuiklyBizVersion") ?: "1.0.0"
+version = System.getenv("kuiklyChartOhosVersion")
+    ?: "${System.getenv("kuiklyBizVersion") ?: "1.0.0"}-ohos"
 
 publishing {
     repositories {
@@ -93,7 +94,7 @@ publishing {
                 username = System.getenv("mavenUserName") ?: ""
                 password = System.getenv("mavenPassword") ?: ""
             }
-            rootProject.properties["mavenUr?"]?.toString()?.let { url = uri(it) }
+            rootProject.properties["mavenUrl"]?.toString()?.let { url = uri(it) }
         }
     }
 }

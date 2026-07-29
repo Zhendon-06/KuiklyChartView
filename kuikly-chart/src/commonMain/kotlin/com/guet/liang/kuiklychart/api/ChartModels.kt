@@ -20,6 +20,14 @@ public enum class ChartCurve {
     SMOOTH,
 }
 
+/** Timing curve used when chart data changes through `ChartView.update`. */
+public enum class ChartAnimationEasing {
+    LINEAR,
+    EASE_IN,
+    EASE_OUT,
+    EASE_IN_OUT,
+}
+
 /** Legend placement inside the chart canvas. */
 public enum class ChartLegendPosition {
     NONE,
@@ -85,4 +93,3 @@ public object ChartPalette {
         Color(0xFFF08BB4L),
     )
 }
-

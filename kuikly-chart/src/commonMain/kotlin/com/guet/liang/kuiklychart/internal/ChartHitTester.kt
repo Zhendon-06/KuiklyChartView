@@ -6,6 +6,7 @@ import com.guet.liang.kuiklychart.api.ChartSpec
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.sqrt
 
@@ -32,18 +33,27 @@ internal object ChartHitTester {
         if (!geometry.plot.contains(horizontal, vertical) || geometry.categoryWidth <= 0f) {
             return null
         }
+        geometry.bars.firstOrNull { it.rect.contains(horizontal, vertical) }?.let { bar ->
+            return selection(spec, bar.seriesIndex, bar.dataIndex)
+        }
+
+        val firstDataIndex = ceil(geometry.viewport.startIndex - 0.5f).toInt().coerceAtLeast(0)
+        val lastDataIndex = floor(geometry.viewport.endIndex + 0.5f).toInt()
+            .coerceAtMost(geometry.dataCount - 1)
+        if (lastDataIndex < firstDataIndex) {
+            return null
+        }
         val categoryPosition = geometry.viewport.startIndex +
             (horizontal - geometry.plot.left) / geometry.categoryWidth
-        val dataIndex = floor(categoryPosition).toInt().coerceIn(0, (geometry.dataCount - 1).coerceAtLeast(0))
+        val dataIndex = floor(categoryPosition).toInt().coerceIn(firstDataIndex, lastDataIndex)
         var selectedSeriesIndex = -1
-        var selectedValue = 0f
         var nearestDistance = Float.POSITIVE_INFINITY
 
-        spec.series.forEachIndexed { seriesIndex, chartSeries ->
-            if (chartSeries.type == ChartSeriesType.PIE) {
+        spec.dataSeries.forEachIndexed { seriesIndex, chartSeries ->
+            if (chartSeries.type == ChartSeriesType.PIE || chartSeries.type == ChartSeriesType.BAR) {
                 return@forEachIndexed
             }
-            val value = chartSeries.values.getOrNull(dataIndex)
+            val value = chartSeries.dataValues.getOrNull(dataIndex)
             if (value == null || !value.isFinite()) {
                 return@forEachIndexed
             }
@@ -52,18 +62,25 @@ internal object ChartHitTester {
             if (distance < nearestDistance) {
                 nearestDistance = distance
                 selectedSeriesIndex = seriesIndex
-                selectedValue = value
             }
         }
         if (selectedSeriesIndex < 0) {
             return null
         }
-        val selectedSeries = spec.series[selectedSeriesIndex]
+        return selection(spec, selectedSeriesIndex, dataIndex)
+    }
+
+    private fun selection(spec: ChartSpec, seriesIndex: Int, dataIndex: Int): ChartSelection? {
+        val selectedSeries = spec.dataSeries.getOrNull(seriesIndex) ?: return null
+        val selectedValue = selectedSeries.dataValues.getOrNull(dataIndex) ?: return null
+        if (!selectedValue.isFinite()) {
+            return null
+        }
         return ChartSelection(
-            selectedSeriesIndex,
+            seriesIndex,
             dataIndex,
             selectedSeries.name,
-            spec.categoryLabel(dataIndex),
+            selectedSeries.dataPointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex),
             selectedValue,
             selectedSeries.type,
         )
@@ -88,9 +105,9 @@ internal object ChartHitTester {
                 .coerceIn(0f, (PI * 2.0).toFloat())
             val angleFromStart = normalizeAngle(touchAngle - startAngle)
             if (angleFromStart <= sweep) {
-                val chartSeries = spec.series.getOrNull(pieSlice.seriesIndex) ?: return null
-                val value = chartSeries.values.getOrNull(pieSlice.dataIndex) ?: return null
-                val label = chartSeries.pointLabels.getOrNull(pieSlice.dataIndex)
+                val chartSeries = spec.dataSeries.getOrNull(pieSlice.seriesIndex) ?: return null
+                val value = chartSeries.dataValues.getOrNull(pieSlice.dataIndex) ?: return null
+                val label = chartSeries.dataPointLabels.getOrNull(pieSlice.dataIndex)
                     ?: spec.categoryLabel(pieSlice.dataIndex)
                 return ChartSelection(
                     pieSlice.seriesIndex,
@@ -105,4 +122,3 @@ internal object ChartHitTester {
         return null
     }
 }
-

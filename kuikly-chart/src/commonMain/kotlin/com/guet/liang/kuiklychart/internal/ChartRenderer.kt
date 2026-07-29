@@ -15,9 +15,7 @@ import com.tencent.kuikly.core.views.FontStyle
 import com.tencent.kuikly.core.views.FontWeight
 import com.tencent.kuikly.core.views.TextAlign
 import kotlin.math.PI
-import kotlin.math.ceil
 import kotlin.math.cos
-import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -36,12 +34,13 @@ internal object ChartRenderer {
         spec: ChartSpec,
         requestedViewport: ChartViewport,
         selection: ChartSelection?,
+        valueScaleOverride: ValueScale? = null,
     ): ChartRenderGeometry {
         drawBackground(context, width, height, spec.theme.backgroundColor)
         val dataCount = spec.dataCount()
         val viewport = ViewportMath.normalize(requestedViewport, dataCount)
-        val pieMode = spec.series.any { it.type == ChartSeriesType.PIE } &&
-            spec.series.none { it.type != ChartSeriesType.PIE }
+        val pieMode = spec.dataSeries.any { it.type == ChartSeriesType.PIE } &&
+            spec.dataSeries.none { it.type != ChartSeriesType.PIE }
         val legendItems = createLegendItems(spec, pieMode)
         val legendLayout = calculateLegendLayout(context, spec, legendItems, width)
         val chartLayout = calculateChartLayout(spec, width, height, pieMode, legendLayout.height)
@@ -56,7 +55,15 @@ internal object ChartRenderer {
         return if (pieMode) {
             renderPie(context, spec, chartLayout.plot, viewport, dataCount, selection)
         } else {
-            renderCartesian(context, spec, chartLayout.plot, viewport, dataCount, selection)
+            renderCartesian(
+                context,
+                spec,
+                chartLayout.plot,
+                viewport,
+                dataCount,
+                selection,
+                valueScaleOverride,
+            )
         }
     }
 
@@ -67,11 +74,12 @@ internal object ChartRenderer {
         viewport: ChartViewport,
         dataCount: Int,
         selection: ChartSelection?,
+        valueScaleOverride: ValueScale?,
     ): ChartRenderGeometry {
-        val valueScale = ScaleMath.calculate(spec, viewport)
-        val geometry = ChartRenderGeometry(plot, viewport, valueScale, dataCount)
-        val hasRenderableValue = spec.series.any { chartSeries ->
-            chartSeries.type != ChartSeriesType.PIE && chartSeries.values.any { it?.isFinite() == true }
+        val valueScale = valueScaleOverride ?: ScaleMath.calculate(spec, viewport)
+        var geometry = ChartRenderGeometry(plot, viewport, valueScale, dataCount)
+        val hasRenderableValue = spec.dataSeries.any { chartSeries ->
+            chartSeries.type != ChartSeriesType.PIE && chartSeries.dataValues.any { it?.isFinite() == true }
         }
         if (!hasRenderableValue || plot.width <= 1f || plot.height <= 1f) {
             drawEmptyState(context, spec, plot)
@@ -79,14 +87,14 @@ internal object ChartRenderer {
         }
 
         drawCartesianGridAndAxes(context, spec, geometry)
-        spec.series.filter { it.type == ChartSeriesType.AREA }.forEachIndexed { _, chartSeries ->
+        spec.dataSeries.filter { it.type == ChartSeriesType.AREA }.forEach { chartSeries ->
             drawAreaSeries(context, spec, geometry, chartSeries)
         }
-        drawBarSeries(context, spec, geometry, selection)
-        spec.series.filter { it.type == ChartSeriesType.AREA }.forEach { chartSeries ->
+        geometry = geometry.copy(bars = drawBarSeries(context, spec, geometry, selection))
+        spec.dataSeries.filter { it.type == ChartSeriesType.AREA }.forEach { chartSeries ->
             drawLineSeries(context, spec, geometry, chartSeries, selection)
         }
-        spec.series.filter { it.type == ChartSeriesType.LINE }.forEach { chartSeries ->
+        spec.dataSeries.filter { it.type == ChartSeriesType.LINE }.forEach { chartSeries ->
             drawLineSeries(context, spec, geometry, chartSeries, selection)
         }
 
@@ -104,9 +112,9 @@ internal object ChartRenderer {
         dataCount: Int,
         selection: ChartSelection?,
     ): ChartRenderGeometry {
-        val chartSeriesIndex = spec.series.indexOfFirst { it.type == ChartSeriesType.PIE }
-        val chartSeries = spec.series.getOrNull(chartSeriesIndex)
-        val positiveValues = chartSeries?.values?.map { value ->
+        val chartSeriesIndex = spec.dataSeries.indexOfFirst { it.type == ChartSeriesType.PIE }
+        val chartSeries = spec.dataSeries.getOrNull(chartSeriesIndex)
+        val positiveValues = chartSeries?.dataValues?.map { value ->
             value?.takeIf { it.isFinite() && it > 0f } ?: 0f
         }.orEmpty()
         val totalValue = positiveValues.sum()
@@ -124,6 +132,16 @@ internal object ChartRenderer {
         val pieSlices = mutableListOf<PieSliceGeometry>()
         var sliceStart = spec.pie.startAngle
 
+        if (innerRadius > 0f && spec.pie.holeColor != null) {
+            drawCircle(
+                context,
+                baseCenterHorizontal,
+                baseCenterVertical,
+                innerRadius,
+                spec.pie.holeColor!!,
+            )
+        }
+
         positiveValues.forEachIndexed { dataIndex, value ->
             if (value <= 0f) {
                 return@forEachIndexed
@@ -139,13 +157,14 @@ internal object ChartRenderer {
             val spacing = min(spec.pie.sliceSpacingAngle.coerceAtLeast(0f), sliceSweep * 0.35f)
             val drawStart = sliceStart + spacing / 2f
             val drawEnd = sliceEnd - spacing / 2f
-            val sliceColor = colorForPoint(chartSeries, dataIndex)
+            val sliceColor = resolveDataPointColor(chartSeries, dataIndex)
 
             drawPieSlice(
                 context,
                 centerHorizontal,
                 centerVertical,
                 outerRadius,
+                innerRadius,
                 drawStart,
                 drawEnd,
                 sliceColor,
@@ -160,8 +179,8 @@ internal object ChartRenderer {
                     centerVertical,
                     outerRadius,
                     innerRadius,
-                    sliceStart,
-                    sliceEnd,
+                    drawStart,
+                    drawEnd,
                 ),
             )
             drawPieLabel(
@@ -180,16 +199,6 @@ internal object ChartRenderer {
             sliceStart = sliceEnd
         }
 
-        if (innerRadius > 0f) {
-            drawCircle(
-                context,
-                baseCenterHorizontal,
-                baseCenterVertical,
-                innerRadius,
-                spec.pie.holeColor ?: spec.theme.backgroundColor,
-            )
-        }
-
         val geometry = ChartRenderGeometry(plot, viewport, emptyScale, dataCount, pieSlices)
         if (selection != null && selection.type == ChartSeriesType.PIE) {
             drawPieSelectionTooltip(context, spec, geometry, selection)
@@ -204,7 +213,8 @@ internal object ChartRenderer {
     ) {
         val plot = geometry.plot
         val gridColor = spec.grid.color ?: spec.theme.gridColor
-        val axisColor = spec.axes.x.axisColor ?: spec.axes.y.axisColor ?: spec.theme.axisColor
+        val horizontalAxisColor = spec.axes.x.axisColor ?: spec.theme.axisColor
+        val verticalAxisColor = spec.axes.y.axisColor ?: spec.theme.axisColor
         val horizontalLabelColor = spec.axes.x.labelColor ?: spec.theme.mutedTextColor
         val verticalLabelColor = spec.axes.y.labelColor ?: spec.theme.mutedTextColor
 
@@ -239,12 +249,13 @@ internal object ChartRenderer {
             }
         }
 
-        context.strokeStyle(axisColor)
         context.lineWidth(1f)
         if (spec.axes.y.visible) {
+            context.strokeStyle(verticalAxisColor)
             drawLine(context, plot.left, plot.top, plot.left, plot.bottom)
         }
         if (spec.axes.x.visible) {
+            context.strokeStyle(horizontalAxisColor)
             drawLine(context, plot.left, plot.bottom, plot.right, plot.bottom)
         }
 
@@ -305,8 +316,9 @@ internal object ChartRenderer {
                 geometry.plot.left,
                 geometry.plot.bottom,
             )
-            gradient.addColorStop(0f, fillColor.opacity(chartSeries.fillOpacity))
-            gradient.addColorStop(1f, fillColor.opacity(0.02f))
+            val fillOpacity = chartSeries.fillOpacity.coerceIn(0f, 1f)
+            gradient.addColorStop(0f, fillColor.opacity(fillOpacity))
+            gradient.addColorStop(1f, fillColor.opacity(fillOpacity * 0.08f))
             context.fillStyle(gradient)
             context.fill()
         }
@@ -319,7 +331,7 @@ internal object ChartRenderer {
         chartSeries: ChartSeries,
         selection: ChartSelection?,
     ) {
-        val seriesIndex = spec.series.indexOf(chartSeries)
+        val seriesIndex = spec.dataSeries.indexOf(chartSeries)
         context.strokeStyle(chartSeries.color)
         context.lineWidth(chartSeries.lineWidth.coerceAtLeast(0.5f))
         context.lineCapRound()
@@ -374,56 +386,68 @@ internal object ChartRenderer {
         spec: ChartSpec,
         geometry: ChartRenderGeometry,
         selection: ChartSelection?,
-    ) {
-        val indexedBarSeries = spec.series.withIndex().filter { it.value.type == ChartSeriesType.BAR }
+    ): List<BarGeometry> {
+        val indexedBarSeries = spec.dataSeries.withIndex().filter { it.value.type == ChartSeriesType.BAR }
         if (indexedBarSeries.isEmpty()) {
-            return
+            return emptyList()
         }
+        val renderedBars = mutableListOf<BarGeometry>()
         val barSeriesCount = indexedBarSeries.size
         val groupWidth = geometry.categoryWidth * spec.bars.groupWidthRatio.coerceIn(0.1f, 1f)
         val totalSpacing = spec.bars.barSpacing.coerceAtLeast(0f) * (barSeriesCount - 1)
         val barWidth = ((groupWidth - totalSpacing) / barSeriesCount).coerceAtLeast(1f)
-        val firstDataIndex = ceil(geometry.viewport.startIndex - 0.5f).toInt().coerceAtLeast(0)
-        val lastDataIndex = floor(geometry.viewport.endIndex + 0.5f).toInt()
-            .coerceAtMost(geometry.dataCount - 1)
+        val dataRange = ViewportRenderMath.visibleDataRange(geometry.viewport, geometry.dataCount)
         val zeroValue = 0f.coerceIn(geometry.scale.minimum, geometry.scale.maximum)
         val zeroVertical = geometry.scale.verticalPosition(zeroValue, geometry.plot)
 
-        if (lastDataIndex < firstDataIndex) {
-            return
-        }
-        for (dataIndex in firstDataIndex..lastDataIndex) {
+        for (dataIndex in dataRange) {
             val categoryCenter = geometry.categoryCenter(dataIndex)
             indexedBarSeries.forEachIndexed { barPosition, indexedSeries ->
-                val value = indexedSeries.value.values.getOrNull(dataIndex)
+                val value = indexedSeries.value.dataValues.getOrNull(dataIndex)
                 if (value == null || !value.isFinite()) {
                     return@forEachIndexed
                 }
                 val valueVertical = geometry.scale.verticalPosition(value, geometry.plot)
-                val barLeft = categoryCenter - groupWidth / 2f +
+                val requestedBarLeft = categoryCenter - groupWidth / 2f +
                     barPosition * (barWidth + spec.bars.barSpacing.coerceAtLeast(0f))
-                val barRight = barLeft + barWidth
+                val requestedBarRight = requestedBarLeft + barWidth
                 val barTop = min(valueVertical, zeroVertical)
                 val barBottom = max(valueVertical, zeroVertical)
-                val isPositive = value >= zeroValue
+                val requestedBarRect = ChartRect(
+                    requestedBarLeft,
+                    barTop,
+                    requestedBarRight,
+                    barBottom,
+                )
+                val visibleBarRect = ChartRect(
+                    requestedBarLeft.coerceAtLeast(geometry.plot.left),
+                    barTop,
+                    requestedBarRight.coerceAtMost(geometry.plot.right),
+                    barBottom,
+                )
+                if (visibleBarRect.width <= 0f || visibleBarRect.height <= 0f) {
+                    return@forEachIndexed
+                }
+                val isPositive = value >= 0f
                 val isSelected = selection?.seriesIndex == indexedSeries.index &&
                     selection.dataIndex == dataIndex && selection.type == ChartSeriesType.BAR
                 drawRoundedBar(
                     context,
-                    ChartRect(barLeft, barTop, barRight, barBottom),
+                    requestedBarRect,
                     spec.bars.cornerRadius,
                     isPositive,
-                    colorForPoint(indexedSeries.value, dataIndex),
+                    resolveDataPointColor(indexedSeries.value, dataIndex),
                 )
                 if (isSelected) {
                     drawRoundedBar(
                         context,
-                        ChartRect(barLeft, barTop, barRight, barBottom),
+                        requestedBarRect,
                         spec.bars.cornerRadius,
                         isPositive,
                         spec.theme.selectionColor.opacity(0.35f),
                     )
                 }
+                renderedBars.add(BarGeometry(indexedSeries.index, dataIndex, visibleBarRect))
                 if (indexedSeries.value.showValues) {
                     context.fillStyle(indexedSeries.value.valueLabelColor ?: spec.theme.textColor)
                     context.font(spec.theme.valueFontSize)
@@ -432,13 +456,14 @@ internal object ChartRenderer {
                     drawText(
                         context,
                         spec.axes.y.formatter(value),
-                        (barLeft + barRight) / 2f,
+                        (requestedBarLeft + requestedBarRight) / 2f,
                         labelVertical,
                         TextAlign.CENTER,
                     )
                 }
             }
         }
+        return renderedBars
     }
 
     private fun drawCartesianSelection(
@@ -447,10 +472,16 @@ internal object ChartRenderer {
         geometry: ChartRenderGeometry,
         selection: ChartSelection,
     ) {
-        val chartSeries = spec.series.getOrNull(selection.seriesIndex) ?: return
-        val selectedValue = chartSeries.values.getOrNull(selection.dataIndex) ?: return
-        val selectedHorizontal = geometry.categoryCenter(selection.dataIndex)
-        val selectedVertical = geometry.scale.verticalPosition(selectedValue, geometry.plot)
+        val chartSeries = spec.dataSeries.getOrNull(selection.seriesIndex) ?: return
+        val selectedValue = chartSeries.dataValues.getOrNull(selection.dataIndex) ?: return
+        val selectedBar = geometry.bars.firstOrNull {
+            it.seriesIndex == selection.seriesIndex && it.dataIndex == selection.dataIndex
+        }
+        val selectedHorizontal = selectedBar?.let { (it.rect.left + it.rect.right) / 2f }
+            ?: geometry.categoryCenter(selection.dataIndex)
+        val selectedVertical = selectedBar?.let {
+            if (selectedValue >= 0f) it.rect.top else it.rect.bottom
+        } ?: geometry.scale.verticalPosition(selectedValue, geometry.plot)
 
         if (spec.tooltip.crosshairEnabled) {
             context.strokeStyle(spec.theme.crosshairColor)
@@ -545,7 +576,8 @@ internal object ChartRenderer {
         context: CanvasContext,
         centerHorizontal: Float,
         centerVertical: Float,
-        radius: Float,
+        outerRadius: Float,
+        innerRadius: Float,
         startAngle: Float,
         endAngle: Float,
         color: Color,
@@ -553,8 +585,21 @@ internal object ChartRenderer {
         spec: ChartSpec,
     ) {
         context.beginPath()
-        context.moveTo(centerHorizontal, centerVertical)
-        context.arc(centerHorizontal, centerVertical, radius, startAngle, endAngle, false)
+        if (innerRadius > 0f) {
+            context.moveTo(
+                centerHorizontal + cos(startAngle) * outerRadius,
+                centerVertical + sin(startAngle) * outerRadius,
+            )
+            context.arc(centerHorizontal, centerVertical, outerRadius, startAngle, endAngle, false)
+            context.lineTo(
+                centerHorizontal + cos(endAngle) * innerRadius,
+                centerVertical + sin(endAngle) * innerRadius,
+            )
+            context.arc(centerHorizontal, centerVertical, innerRadius, endAngle, startAngle, true)
+        } else {
+            context.moveTo(centerHorizontal, centerVertical)
+            context.arc(centerHorizontal, centerVertical, outerRadius, startAngle, endAngle, false)
+        }
         context.closePath()
         context.fillStyle(color)
         context.fill()
@@ -582,7 +627,7 @@ internal object ChartRenderer {
         if (spec.pie.labelMode == PieLabelMode.NONE || percent < spec.pie.minimumLabelPercent) {
             return
         }
-        val label = chartSeries.pointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex)
+        val label = chartSeries.dataPointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex)
         val percentText = "${(percent * 100f + 0.5f).toInt()}%"
         val valueText = spec.axes.y.formatter(value)
         val text = when (spec.pie.labelMode) {
@@ -615,15 +660,13 @@ internal object ChartRenderer {
     ): List<List<IndexedChartPoint>> {
         val segments = mutableListOf<MutableList<IndexedChartPoint>>()
         var currentSegment = mutableListOf<IndexedChartPoint>()
-        val firstDataIndex = ceil(geometry.viewport.startIndex - 0.5f).toInt().coerceAtLeast(0)
-        val lastDataIndex = floor(geometry.viewport.endIndex + 0.5f).toInt()
-            .coerceAtMost(min(geometry.dataCount, chartSeries.values.size) - 1)
-        if (lastDataIndex < firstDataIndex) {
-            return emptyList()
-        }
+        val dataRange = ViewportRenderMath.visibleDataRange(
+            geometry.viewport,
+            min(geometry.dataCount, chartSeries.dataValues.size),
+        )
 
-        for (dataIndex in firstDataIndex..lastDataIndex) {
-            val value = chartSeries.values.getOrNull(dataIndex)
+        for (dataIndex in dataRange) {
+            val value = chartSeries.dataValues.getOrNull(dataIndex)
             if (value == null || !value.isFinite()) {
                 if (currentSegment.isNotEmpty()) {
                     segments.add(currentSegment)
@@ -758,19 +801,19 @@ internal object ChartRenderer {
             return emptyList()
         }
         if (pieMode) {
-            val chartSeries = spec.series.firstOrNull { it.type == ChartSeriesType.PIE } ?: return emptyList()
-            return chartSeries.values.mapIndexedNotNull { dataIndex, value ->
+            val chartSeries = spec.dataSeries.firstOrNull { it.type == ChartSeriesType.PIE } ?: return emptyList()
+            return chartSeries.dataValues.mapIndexedNotNull { dataIndex, value ->
                 if (value == null || !value.isFinite() || value <= 0f) {
                     null
                 } else {
                     LegendItem(
-                        chartSeries.pointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex),
-                        colorForPoint(chartSeries, dataIndex),
+                        chartSeries.dataPointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex),
+                        resolveDataPointColor(chartSeries, dataIndex),
                     )
                 }
             }
         }
-        return spec.series.filter { it.type != ChartSeriesType.PIE && it.name.isNotEmpty() }
+        return spec.dataSeries.filter { it.type != ChartSeriesType.PIE && it.name.isNotEmpty() }
             .map { LegendItem(it.name, it.color) }
     }
 
@@ -838,24 +881,11 @@ internal object ChartRenderer {
     }
 
     private fun categoryLabelIndices(spec: ChartSpec, geometry: ChartRenderGeometry): List<Int> {
-        val firstIndex = ceil(geometry.viewport.startIndex).toInt().coerceAtLeast(0)
-        val lastIndex = floor(geometry.viewport.endIndex).toInt().coerceAtMost(geometry.dataCount - 1)
-        if (lastIndex < firstIndex) {
-            return emptyList()
-        }
-        val visibleCount = lastIndex - firstIndex + 1
-        val maxLabelCount = spec.axes.x.maxLabelCount.coerceAtLeast(1)
-        val step = ceil(visibleCount.toFloat() / maxLabelCount).toInt().coerceAtLeast(1)
-        val indices = mutableListOf<Int>()
-        var dataIndex = firstIndex
-        while (dataIndex <= lastIndex) {
-            indices.add(dataIndex)
-            dataIndex += step
-        }
-        if (indices.lastOrNull() != lastIndex) {
-            indices.add(lastIndex)
-        }
-        return indices
+        return ViewportRenderMath.categoryLabelIndices(
+            geometry.viewport,
+            geometry.dataCount,
+            spec.axes.x.maxLabelCount,
+        )
     }
 
     private fun drawEmptyState(context: CanvasContext, spec: ChartSpec, plot: ChartRect) {
@@ -1035,18 +1065,6 @@ internal object ChartRenderer {
         context.fill()
     }
 
-    private fun colorForPoint(chartSeries: ChartSeries, dataIndex: Int): Color {
-        return if (chartSeries.pointColors.isEmpty()) {
-            if (chartSeries.type == ChartSeriesType.PIE) {
-                ChartPalette.colors[dataIndex % ChartPalette.colors.size]
-            } else {
-                chartSeries.color
-            }
-        } else {
-            chartSeries.pointColors[dataIndex % chartSeries.pointColors.size]
-        }
-    }
-
     private data class IndexedChartPoint(
         val dataIndex: Int,
         val value: Float,
@@ -1075,4 +1093,16 @@ internal object ChartRenderer {
         val titleTop: Float,
         val legendTop: Float,
     )
+}
+
+internal fun resolveDataPointColor(chartSeries: ChartSeries, dataIndex: Int): Color {
+    return if (chartSeries.dataPointColors.isEmpty()) {
+        if (chartSeries.type == ChartSeriesType.PIE) {
+            ChartPalette.colors[dataIndex % ChartPalette.colors.size]
+        } else {
+            chartSeries.color
+        }
+    } else {
+        chartSeries.dataPointColors[dataIndex % chartSeries.dataPointColors.size]
+    }
 }

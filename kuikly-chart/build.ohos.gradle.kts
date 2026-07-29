@@ -57,7 +57,8 @@ kotlin {
 }
 
 group = "com.guet.liang.kuiklychartview"
-version = System.getenv("kuiklyBizVersion") ?: "1.0.0"
+version = System.getenv("kuiklyChartOhosVersion")
+    ?: "${System.getenv("kuiklyBizVersion") ?: "1.0.0"}-ohos"
 
 android {
     namespace = "com.guet.liang.kuiklychartview.chart"

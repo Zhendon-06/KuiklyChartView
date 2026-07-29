@@ -1,28 +1,34 @@
 package com.guet.liang.kuiklychart
 
+import com.guet.liang.kuiklychart.api.ChartAnimationEasing
 import com.guet.liang.kuiklychart.api.ChartSelection
 import com.guet.liang.kuiklychart.api.ChartSeriesType
 import com.guet.liang.kuiklychart.api.ChartSpec
 import com.guet.liang.kuiklychart.api.ChartViewport
+import com.guet.liang.kuiklychart.internal.ChartDataSnapshot
+import com.guet.liang.kuiklychart.internal.ChartDataTransition
 import com.guet.liang.kuiklychart.internal.ChartHitTester
 import com.guet.liang.kuiklychart.internal.ChartRenderGeometry
 import com.guet.liang.kuiklychart.internal.ChartRenderer
+import com.guet.liang.kuiklychart.internal.ScaleMath
+import com.guet.liang.kuiklychart.internal.ValueScale
 import com.guet.liang.kuiklychart.internal.ViewportMath
+import com.guet.liang.kuiklychart.internal.transform
 import com.tencent.kuikly.core.base.Color
 import com.tencent.kuikly.core.base.ComposeAttr
 import com.tencent.kuikly.core.base.ComposeEvent
 import com.tencent.kuikly.core.base.ComposeView
 import com.tencent.kuikly.core.base.ViewBuilder
 import com.tencent.kuikly.core.base.ViewContainer
-import com.tencent.kuikly.core.base.attr.CaptureRule
-import com.tencent.kuikly.core.base.attr.CaptureRuleDirection
-import com.tencent.kuikly.core.base.event.EventName
-import com.tencent.kuikly.core.base.event.PanGestureParams
 import com.tencent.kuikly.core.base.event.TouchParams
 import com.tencent.kuikly.core.reactive.handler.observable
+import com.tencent.kuikly.core.timer.clearTimeout
+import com.tencent.kuikly.core.timer.setTimeout
 import com.tencent.kuikly.core.views.Canvas
 import com.tencent.kuikly.core.views.View
 import kotlin.math.sqrt
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /** Event callbacks emitted by every chart convenience component. */
 public class ChartEvent : ComposeEvent() {
@@ -60,16 +66,28 @@ public class ChartEvent : ComposeEvent() {
 public class ChartView internal constructor(
     defaultSeriesType: ChartSeriesType,
 ) : ComposeView<ComposeAttr, ChartEvent>() {
-    public val spec: ChartSpec = ChartSpec(defaultSeriesType)
+    private val spec: ChartSpec = ChartSpec(defaultSeriesType)
 
     private var renderRevision by observable(0)
     private var viewportState by observable(ChartViewport(0f, 0f))
     private var selectionState by observable<ChartSelection?>(null)
     private var lastRenderGeometry: ChartRenderGeometry? = null
     private var configuredDataCount: Int = 0
+    private var viewLoaded: Boolean = false
+
+    private var animationTimeoutRef: String? = null
+    private var activeDataTransition: ChartDataTransition? = null
+    private var animationStartedAt: TimeMark? = null
+    private var activeAnimationDurationMillis: Int = 0
+    private var activeAnimationEasing: ChartAnimationEasing = ChartAnimationEasing.LINEAR
+    private var animationGeneration: Int = 0
+    private var animationStartScale: ValueScale? = null
+    private var animationTargetScale: ValueScale? = null
+    private var animationScaleOverride: ValueScale? = null
 
     private var gestureMode: GestureMode = GestureMode.NONE
     private var gestureStartHorizontal: Float = 0f
+    private var gestureStartVertical: Float = 0f
     private var gestureStartViewport: ChartViewport = ChartViewport(0f, 0f)
     private var pinchStartDistance: Float = 0f
     private var gestureMoved: Boolean = false
@@ -89,10 +107,50 @@ public class ChartView internal constructor(
 
     /** Applies chart data and grouped visual/interaction configuration. */
     public fun chart(init: ChartSpec.() -> Unit) {
+        cancelDataAnimation(restoreTarget = true)
+        applySpec(init)
+        renderRevision += 1
+    }
+
+    /**
+     * Replaces runtime data and animates from the currently displayed values by default.
+     */
+    public fun update(init: ChartSpec.() -> Unit) {
+        update(animated = true, init = init)
+    }
+
+    /** Replaces runtime data, optionally bypassing the configured transition. */
+    public fun update(
+        animated: Boolean,
+        init: ChartSpec.() -> Unit,
+    ) {
+        val previousData = ChartDataSnapshot.capture(spec)
+        cancelDataAnimation(restoreTarget = true)
+        applySpec(init)
+        val transition = ChartDataTransition.create(previousData, spec)
+        val targetScale = ScaleMath.calculate(spec, viewportState)
+        val shouldAnimate = animated &&
+            spec.animation.enabled &&
+            spec.animation.durationMillis > 0 &&
+            viewLoaded &&
+            lastRenderGeometry != null &&
+            transition.hasChanges
+        if (shouldAnimate) {
+            startDataAnimation(transition, targetScale)
+        } else {
+            renderRevision += 1
+        }
+    }
+
+    private fun applySpec(init: ChartSpec.() -> Unit) {
+        gestureMode = GestureMode.NONE
+        gestureMoved = false
+        suppressNextClick = false
         val previousDataCount = spec.dataCount()
+        val wasShowingFullViewport = ViewportMath.isFull(viewportState, previousDataCount)
         spec.apply(init)
         configuredDataCount = spec.dataCount()
-        if (previousDataCount <= 1 && configuredDataCount > 1 && lastRenderGeometry != null) {
+        if (wasShowingFullViewport) {
             setViewportInternal(ViewportMath.full(configuredDataCount), emitEvent = false)
         } else {
             setViewportInternal(
@@ -100,12 +158,9 @@ public class ChartView internal constructor(
                 emitEvent = false,
             )
         }
-        renderRevision += 1
-    }
-
-    /** Alias for [chart], intended for runtime data replacement through a view ref. */
-    public fun update(init: ChartSpec.() -> Unit) {
-        chart(init)
+        if (selectionState != null) {
+            setSelection(null)
+        }
     }
 
     /** Shows the full data range and clears the active selection. */
@@ -116,6 +171,9 @@ public class ChartView internal constructor(
 
     /** Sets a visible category range. Fractional indices are supported. */
     public fun setViewport(startIndex: Float, endIndex: Float) {
+        if (!startIndex.isFinite() || !endIndex.isFinite()) {
+            return
+        }
         setViewportInternal(ChartViewport(startIndex, endIndex), emitEvent = true)
     }
 
@@ -133,6 +191,9 @@ public class ChartView internal constructor(
 
     /** Pans by a number of category slots; positive values move forward. */
     public fun panBy(categoryCount: Float) {
+        if (!categoryCount.isFinite()) {
+            return
+        }
         val requestedViewport = ChartViewport(
             viewportState.startIndex + categoryCount,
             viewportState.endIndex + categoryCount,
@@ -142,14 +203,14 @@ public class ChartView internal constructor(
 
     /** Selects a datum programmatically. */
     public fun select(seriesIndex: Int, dataIndex: Int) {
-        val chartSeries = spec.series.getOrNull(seriesIndex) ?: return
-        val value = chartSeries.values.getOrNull(dataIndex) ?: return
+        val chartSeries = spec.dataSeries.getOrNull(seriesIndex) ?: return
+        val value = chartSeries.dataValues.getOrNull(dataIndex)?.takeIf(Float::isFinite) ?: return
         setSelection(
             ChartSelection(
                 seriesIndex,
                 dataIndex,
                 chartSeries.name,
-                chartSeries.pointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex),
+                chartSeries.dataPointLabels.getOrNull(dataIndex) ?: spec.categoryLabel(dataIndex),
                 value,
                 chartSeries.type,
             ),
@@ -170,6 +231,22 @@ public class ChartView internal constructor(
         )
     }
 
+    override fun viewDidLoad() {
+        super.viewDidLoad()
+        viewLoaded = true
+    }
+
+    override fun viewWillUnload() {
+        viewLoaded = false
+        cancelDataAnimation(restoreTarget = true)
+        super.viewWillUnload()
+    }
+
+    override fun viewDestroyed() {
+        lastRenderGeometry = null
+        super.viewDestroyed()
+    }
+
     override fun body(): ViewBuilder {
         val chartView = this
         return {
@@ -188,6 +265,7 @@ public class ChartView internal constructor(
                         chartView.spec,
                         chartView.viewportState,
                         chartView.selectionState,
+                        chartView.animationScaleOverride,
                     )
                 }
             }
@@ -195,11 +273,6 @@ public class ChartView internal constructor(
                 attr {
                     absolutePositionAllZero()
                     backgroundColor(Color.TRANSPARENT)
-                    capture(
-                        CaptureRule.click(),
-                        CaptureRule.doubleClick(),
-                        CaptureRule.pan(CaptureRuleDirection.HORIZONTAL),
-                    )
                 }
                 event {
                     click { clickParams ->
@@ -210,13 +283,6 @@ public class ChartView internal constructor(
                             chartView.resetViewport()
                         }
                     }
-                    register(
-                        EventName.PAN.value,
-                        { rawParams ->
-                            chartView.handlePan(PanGestureParams.decode(rawParams))
-                        },
-                        isSync = true,
-                    )
                     touchDown(isSync = true) { touchParams ->
                         chartView.handleTouchDown(touchParams)
                     }
@@ -224,9 +290,7 @@ public class ChartView internal constructor(
                         chartView.handleTouchMove(touchParams)
                     }
                     touchUp(isSync = true) {
-                        if (chartView.gestureMode == GestureMode.PINCH) {
-                            chartView.finishGesture()
-                        }
+                        chartView.finishGesture()
                     }
                     touchCancel(isSync = true) {
                         chartView.finishGesture()
@@ -252,12 +316,19 @@ public class ChartView internal constructor(
     }
 
     private fun handleTouchDown(touchParams: TouchParams) {
+        suppressNextClick = false
         val touchPoints = touchPoints(touchParams)
         if (spec.interaction.zoomEnabled && touchPoints.size >= 2) {
             gestureMoved = false
             gestureStartViewport = viewportState
             gestureMode = GestureMode.PINCH
             pinchStartDistance = distance(touchPoints[0], touchPoints[1]).coerceAtLeast(1f)
+        } else {
+            gestureMode = GestureMode.NONE
+            gestureStartHorizontal = touchPoints[0].horizontal
+            gestureStartVertical = touchPoints[0].vertical
+            gestureStartViewport = viewportState
+            gestureMoved = false
         }
     }
 
@@ -284,46 +355,42 @@ public class ChartView internal constructor(
                 spec.dataCount(),
                 spec.interaction.minimumVisiblePoints,
             )
-            gestureMoved = gestureMoved || currentDistance != pinchStartDistance
+            gestureMoved = gestureMoved || kotlin.math.abs(currentDistance - pinchStartDistance) > 3f
             setViewportInternal(nextViewport, emitEvent = true)
             return
         }
 
-    }
-
-    private fun handlePan(panParams: PanGestureParams) {
-        if (!spec.interaction.panEnabled || gestureMode == GestureMode.PINCH) {
+        if (
+            !spec.interaction.panEnabled ||
+            touchPoints.size != 1 ||
+            gestureMode == GestureMode.PINCH ||
+            gestureMode == GestureMode.VERTICAL
+        ) {
             return
         }
-        when (panParams.state) {
-            "start" -> {
-                gestureMode = GestureMode.PAN
-                gestureStartHorizontal = panParams.x
-                gestureStartViewport = viewportState
-                gestureMoved = false
-            }
 
-            "move" -> {
-                if (gestureMode != GestureMode.PAN) {
-                    gestureMode = GestureMode.PAN
-                    gestureStartHorizontal = panParams.x
-                    gestureStartViewport = viewportState
-                    return
-                }
-                val geometry = lastRenderGeometry ?: return
-                val horizontalDelta = panParams.x - gestureStartHorizontal
-                gestureMoved = gestureMoved || kotlin.math.abs(horizontalDelta) > 3f
-                val nextViewport = ViewportMath.pan(
-                    gestureStartViewport,
-                    horizontalDelta,
-                    geometry.plot.width,
-                    spec.dataCount(),
-                )
-                setViewportInternal(nextViewport, emitEvent = true)
+        val touchPoint = touchPoints[0]
+        val horizontalDelta = touchPoint.horizontal - gestureStartHorizontal
+        val verticalDelta = touchPoint.vertical - gestureStartVertical
+        if (gestureMode == GestureMode.NONE) {
+            if (kotlin.math.abs(horizontalDelta) <= 3f && kotlin.math.abs(verticalDelta) <= 3f) {
+                return
             }
-
-            "end" -> finishGesture()
+            if (kotlin.math.abs(verticalDelta) > kotlin.math.abs(horizontalDelta)) {
+                gestureMode = GestureMode.VERTICAL
+                return
+            }
+            gestureMode = GestureMode.PAN
         }
+        val geometry = lastRenderGeometry ?: return
+        gestureMoved = true
+        val nextViewport = ViewportMath.pan(
+            gestureStartViewport,
+            horizontalDelta,
+            geometry.plot.width,
+            spec.dataCount(),
+        )
+        setViewportInternal(nextViewport, emitEvent = true)
     }
 
     private fun finishGesture() {
@@ -333,7 +400,7 @@ public class ChartView internal constructor(
     }
 
     private fun zoomBy(scale: Float) {
-        if (scale <= 0f) {
+        if (!scale.isFinite() || scale <= 0f) {
             return
         }
         val nextViewport = ViewportMath.zoom(
@@ -384,16 +451,107 @@ public class ChartView internal constructor(
         return sqrt(horizontalDelta * horizontalDelta + verticalDelta * verticalDelta)
     }
 
+    private fun startDataAnimation(
+        transition: ChartDataTransition,
+        targetScale: ValueScale,
+    ) {
+        activeDataTransition = transition
+        activeAnimationDurationMillis = spec.animation.durationMillis.coerceAtLeast(1)
+        activeAnimationEasing = spec.animation.easing
+        animationStartScale = lastRenderGeometry?.scale
+        animationTargetScale = targetScale
+        animationScaleOverride = animationStartScale
+        animationStartedAt = TimeSource.Monotonic.markNow()
+        transition.apply(0f)
+        renderRevision += 1
+        scheduleAnimationFrame()
+    }
+
+    private fun scheduleAnimationFrame() {
+        val scheduledGeneration = animationGeneration
+        animationTimeoutRef = setTimeout(ANIMATION_FRAME_INTERVAL_MILLIS) {
+            if (scheduledGeneration != animationGeneration) {
+                return@setTimeout
+            }
+            animationTimeoutRef = null
+            renderAnimationFrame()
+        }
+    }
+
+    private fun renderAnimationFrame() {
+        val transition = activeDataTransition ?: return
+        val startedAt = animationStartedAt ?: return
+        val linearProgress = (
+            startedAt.elapsedNow().inWholeMilliseconds.toFloat() /
+                activeAnimationDurationMillis.toFloat()
+            ).coerceIn(0f, 1f)
+        val easedProgress = activeAnimationEasing.transform(linearProgress)
+        transition.apply(easedProgress)
+        animationScaleOverride = animationStartScale?.interpolateTo(
+            animationTargetScale ?: animationStartScale ?: return,
+            easedProgress,
+        )
+        refreshSelectionForCurrentData()
+        if (linearProgress >= 1f) {
+            animationScaleOverride = null
+        }
+        renderRevision += 1
+        if (linearProgress >= 1f) {
+            activeDataTransition = null
+            animationStartedAt = null
+            animationStartScale = null
+            animationTargetScale = null
+        } else if (viewLoaded) {
+            scheduleAnimationFrame()
+        }
+    }
+
+    private fun cancelDataAnimation(restoreTarget: Boolean) {
+        animationGeneration += 1
+        animationTimeoutRef?.let { timeoutRef -> clearTimeout(timeoutRef) }
+        if (restoreTarget) {
+            activeDataTransition?.apply(1f)
+        }
+        animationTimeoutRef = null
+        activeDataTransition = null
+        animationStartedAt = null
+        animationStartScale = null
+        animationTargetScale = null
+        animationScaleOverride = null
+    }
+
+    private fun refreshSelectionForCurrentData() {
+        val selection = selectionState ?: return
+        val chartSeries = spec.dataSeries.getOrNull(selection.seriesIndex)
+        val value = chartSeries?.dataValues?.getOrNull(selection.dataIndex)
+        if (chartSeries == null || value == null || !value.isFinite()) {
+            setSelection(null)
+            return
+        }
+        selectionState = selection.copy(
+            seriesName = chartSeries.name,
+            label = chartSeries.dataPointLabels.getOrNull(selection.dataIndex)
+                ?: spec.categoryLabel(selection.dataIndex),
+            value = value,
+            type = chartSeries.type,
+        )
+    }
+
     private enum class GestureMode {
         NONE,
         PAN,
         PINCH,
+        VERTICAL,
     }
 
     private data class GesturePoint(
         val horizontal: Float,
         val vertical: Float,
     )
+
+    private companion object {
+        const val ANIMATION_FRAME_INTERVAL_MILLIS: Int = 16
+    }
 }
 
 /** Adds a generic chart that can combine line, area, and bar series. */

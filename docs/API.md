@@ -20,10 +20,10 @@
 
 | 成员 | 说明 |
 | --- | --- |
-| `spec: ChartSpec` | 当前图表配置，只读引用 |
 | `currentSelection: ChartSelection?` | 当前选中数据 |
 | `currentViewport: ChartViewport` | 当前可见分类范围 |
-| `chart {}` / `update {}` | 应用或运行时修改配置；`update` 是语义别名 |
+| `chart {}` | 首次应用配置，不播放数据动画 |
+| `update(animated = true) {}` | 运行时修改配置；默认从当前数据平滑过渡到目标数据 |
 | `setViewport(startIndex, endIndex)` | 设置可见分类索引，可使用小数 |
 | `resetViewport()` | 恢复完整范围并清除选择 |
 | `zoomIn(factor = 1.5f)` | 以中心为锚点放大 |
@@ -44,6 +44,7 @@
 | `defaultSeriesType` | `ChartSeriesType` | 由组件入口决定 |
 | `labels` | `List<String>` | 空列表 |
 | `series` | `List<ChartSeries>` | 空列表 |
+| `animation` | `ChartAnimationConfig` | 启用，450ms，`EASE_IN_OUT` |
 
 ### 数据 DSL
 
@@ -70,8 +71,42 @@ chart {
     pie { }
     tooltip { }
     interaction { }
+    animation { }
 }
 ```
+
+## 数据更新动画
+
+`update {}` 会在组件已挂载且已有首帧几何时启动动画。每帧使用 Kuikly 跨端定时 API 推进，并同步重绘坐标轴、网格、系列、数值标签和命中几何。
+
+### ChartAnimationConfig
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 是否为 `update` 播放数据过渡 |
+| `durationMillis` | `450` | 动画时长；小于等于 0 时立即更新 |
+| `easing` | `EASE_IN_OUT` | `LINEAR` / `EASE_IN` / `EASE_OUT` / `EASE_IN_OUT` |
+
+```kotlin
+chart {
+    line("趋势", 12f, 18f, 15f)
+    animation {
+        durationMillis = 600
+        easing = ChartAnimationEasing.EASE_OUT
+    }
+}
+
+chartRef.view?.update {
+    series[0].values(20f, 14f, 27f)
+}
+```
+
+- 动画优先按“系列名称 + 类型”匹配旧数据；未找到同名系列时，再以“同位置 + 同类型”兜底匹配。
+- 新系列或新增有限数据点从零开始；已有有限值变为 `null`、NaN 或 Infinity 时先平滑收敛到零，末帧再恢复为断点。
+- 缩短数据或删除系列时，旧图形会向零收敛并淡出，末帧才移除，避免首帧跳变。
+- 柱状图正负值会自然经过零；饼图和环形图通过数值权重变化平滑调整扇区。
+- 新 `update` 会取消进行中的旧动画，并从当前插值值继续，不跳回旧数据。
+- `update(animated = false) {}` 可对单次更新禁用动画。
 
 ## ChartSeries
 
@@ -81,6 +116,7 @@ chart {
 | `name` | 必填 | 图例与 Tooltip 系列名 |
 | `values` / `values(...)` | 必填 | 数据；`null` 产生折线断点 |
 | `color` / `color(...)` | 自动调色板 | 系列主色 |
+| `barColors(...)` | 空 | 逐柱填充颜色，数量不足时循环使用 |
 | `pointColors(...)` | 空 | 逐柱/逐扇区颜色，循环使用 |
 | `pointLabels(...)` | 空 | 饼图逐扇区标签 |
 | `fillColor` / `fill(color, opacity)` | 主色 / `0.24` | 面积填充 |
@@ -191,6 +227,10 @@ chart {
 | `initialVisiblePoints` | `0`，展示全部 |
 | `dismissSelectionOnOutsideTap` | `true` |
 
+启用 `panEnabled` 后，单指横向拖动会持续更新带小数边界的 `ChartViewport`。
+X 轴标签和竖网格使用全局数据索引作为固定锚点，因此平移时与折线节点同步移动并从边缘连续进入；
+图表嵌套在纵向 `Scroller` 中时仅捕获横向 Pan，不影响页面纵向滚动。
+
 ## 事件
 
 ```kotlin
@@ -225,4 +265,3 @@ event {
 - `contentPadding`
 
 `contentPadding(all)` 与 `contentPadding(left, top, right, bottom)` 可快速设置 `ChartInsets`。
-
