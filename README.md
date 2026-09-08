@@ -436,3 +436,45 @@ chart {
 - [Kuikly 多模块](https://kuikly.tds.qq.com/DevGuide/multi_module.html)
 - [KuiklyUI 主仓库](https://github.com/Tencent-TDS/KuiklyUI)
 - [KuiklyChatUI 工程范例](https://github.com/Kuikly-contrib/KuiklyChatUI)
+
+### 金融行情图表
+
+`com.guet.liang.kuiklychart.finance` 提供独立的跨端金融组件：
+
+- `FinancialChart`：OHLC K 线、MA5/10/20、分时价格/均价、昨收对称刻度、涨跌幅轴、联动成交量和点选十字线。K 线支持平移、双指缩放、`zoom()`、`resetViewport()`；纵向手势交给外层滚动容器。
+- `DualAxisChart`：金额与百分比等独立量纲对照，各有独立范围、格式化器和数据缺口。
+- `FinancialChartMath`：完整历史均线预热、金融价格范围和数据有效性检查。
+
+```kotlin
+FinancialChart {
+    attr { height(422f) }
+    chart {
+        mode = FinancialChartMode.CANDLES
+        points = candles // List<FinancialPoint>: label/open/high/low/close/volume
+        visibleCount = 60
+        volumeUnit = "手"
+    }
+}
+```
+
+分时模式设置 `mode = FinancialChartMode.INTRADAY`、`previousClose`、`sessionSlots`、`sessionLabels`。
+`FinancialPoint.slot` 使用交易时段坐标，未来时段留白；`volume` 必须是该周期增量，`average` 由数据源提供真实成交均价，组件不会推算缺失行情。
+均线使用完整历史计算后裁剪可视范围，不会把不足一个窗口的数据绘制成完整均线。
+
+
+### AI 预测曲线与环图中心信息
+
+`FinancialChartMode.CLOSE_LINE` 用于历史收盘价与未来估计：设置 `showVolume = false`，
+`forecastStartIndex` 为首个预测点的绝对索引，`forecastIntervals` 为该索引到
+`FinancialInterval(lower, upper)` 的映射。历史为实线，预测为虚线，预测区域有明确分界；
+仅相邻且有效的显式上下界形成区间阴影，缺失或不包含预测值的上下界不绘制、不影响坐标轴。
+`onSelectionChanged` 返回原始数据索引，可联动业务解读；平移与缩放后清除旧选中状态。
+
+`PieChartConfig.centerText` / `centerSubtext` 设置环图中心说明；
+`showSelectionInCenter` 默认开启，选中扇区后中心显示名称与占比。
+中心文字按空心区域宽度缩放，窄屏可使用外部图例，避免标签挤占环图。
+
+示例路由 `financial_preview` 提供金融图表与环图的确定性演示数据，明确标记为非真实预测。
+指数分时请传 `valueLabel = "点位"`，不要将成分股成交额/成交股数作为指数的 `average`。
+
+笛卡尔图纵轴边距按实际格式化标签宽度分配，支持五位数指数点位或带单位的较长刻度，避免固定边距裁掉首位数字。

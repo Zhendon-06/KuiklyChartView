@@ -43,7 +43,12 @@ internal object ChartRenderer {
             spec.dataSeries.none { it.type != ChartSeriesType.PIE }
         val legendItems = createLegendItems(spec, pieMode)
         val legendLayout = calculateLegendLayout(context, spec, legendItems, width)
-        val chartLayout = calculateChartLayout(spec, width, height, pieMode, legendLayout.height)
+        val valueScale = if (pieMode) null else valueScaleOverride ?: ScaleMath.calculate(spec, viewport)
+        val yLabelWidth = if (!pieMode && spec.axes.y.visible && spec.axes.y.showLabels) {
+            context.font(spec.axes.y.labelFontSize ?: spec.theme.labelFontSize)
+            valueScale?.ticks?.maxOfOrNull { context.measureText(spec.axes.y.formatter(it)).width } ?: 0f
+        } else 0f
+        val chartLayout = calculateChartLayout(spec, width, height, pieMode, legendLayout.height, yLabelWidth)
 
         drawTitles(context, spec, chartLayout.titleLeft, chartLayout.titleTop)
         if (spec.legend.position == ChartLegendPosition.TOP) {
@@ -62,7 +67,7 @@ internal object ChartRenderer {
                 viewport,
                 dataCount,
                 selection,
-                valueScaleOverride,
+                valueScale,
             )
         }
     }
@@ -199,6 +204,25 @@ internal object ChartRenderer {
             sliceStart = sliceEnd
         }
 
+        if (innerRadius > 0f) {
+            val chosen = selection?.takeIf { spec.pie.showSelectionInCenter && it.type == ChartSeriesType.PIE }
+            val centerText = chosen?.label ?: spec.pie.centerText
+            val centerSubtext = chosen?.let {
+                val percent = positiveValues.getOrNull(it.dataIndex)?.div(totalValue)?.times(100f) ?: 0f
+                "${com.guet.liang.kuiklychart.finance.financialNumber(percent, 1)}%"
+            } ?: spec.pie.centerSubtext
+            fun centered(value: String, baseline: Float, color: Color, preferredSize: Float) {
+                var fontSize = preferredSize
+                context.font(fontSize)
+                val availableWidth = innerRadius * 1.65f
+                val measured = context.measureText(value).width
+                if (measured > availableWidth) fontSize = (fontSize * availableWidth / measured).coerceAtLeast(8f)
+                context.font(fontSize); context.fillStyle(color)
+                drawText(context, value, baseCenterHorizontal, baseline, TextAlign.CENTER)
+            }
+            centered(centerText, baseCenterVertical - 2f, spec.theme.textColor, 15f)
+            centered(centerSubtext, baseCenterVertical + 16f, spec.theme.mutedTextColor, 10f)
+        }
         val geometry = ChartRenderGeometry(plot, viewport, emptyScale, dataCount, pieSlices)
         if (selection != null && selection.type == ChartSeriesType.PIE) {
             drawPieSelectionTooltip(context, spec, geometry, selection)
@@ -728,6 +752,7 @@ internal object ChartRenderer {
         height: Float,
         pieMode: Boolean,
         legendHeight: Float,
+        yLabelWidth: Float,
     ): ChartLayout {
         val padding = spec.theme.contentPadding
         val contentLeft = padding.left
@@ -755,7 +780,7 @@ internal object ChartRenderer {
         var plotLeft = contentLeft
         var plotBottom = contentBottom
         if (!pieMode && spec.axes.y.visible) {
-            plotLeft += 46f
+            plotLeft += if (spec.axes.y.showLabels) max(46f, yLabelWidth + AXIS_LABEL_GAP + 2f) else 0f
         }
         if (!pieMode && spec.axes.x.visible) {
             plotBottom -= 27f

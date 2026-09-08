@@ -117,6 +117,9 @@ public class PieChartConfig {
     public var labelMode: PieLabelMode = PieLabelMode.PERCENT
     public var minimumLabelPercent: Float = 0.05f
     public var holeColor: Color? = null
+    public var centerText: String = ""
+    public var centerSubtext: String = ""
+    public var showSelectionInCenter: Boolean = true
 }
 
 /** Tooltip and crosshair options. */
